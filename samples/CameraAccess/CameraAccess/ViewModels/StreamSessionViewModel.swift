@@ -14,6 +14,8 @@
 // video frame handling, photo capture, and error handling.
 //
 
+import CoreImage
+import CoreMedia
 import MWDATCamera
 import MWDATCore
 import SwiftUI
@@ -75,6 +77,11 @@ class StreamSessionViewModel: ObservableObject {
   private var deviceMonitorTask: Task<Void, Never>?
   private var iPhoneCameraManager: IPhoneCameraManager?
 
+  // CPU-based CIContext for rendering video frames in background
+  // (VideoToolbox/GPU is unavailable when screen is locked)
+  private let cpuCIContext = CIContext(options: [.useSoftwareRenderer: true])
+  private var backgroundFrameCount = 0
+
   init(wearables: WearablesInterface) {
     self.wearables = wearables
     // Let the SDK auto-select from available devices
@@ -126,21 +133,25 @@ class StreamSessionViewModel: ObservableObject {
 
         let isInBackground = UIApplication.shared.applicationState == .background
 
-        // Only decode to UIImage when in foreground (avoid VideoToolbox issues when locked)
         if !isInBackground {
+          self.backgroundFrameCount = 0
           if let image = videoFrame.makeUIImage() {
             self.currentVideoFrame = image
             if !self.hasReceivedFirstFrame {
               self.hasReceivedFirstFrame = true
             }
-            // Forward video frames to Gemini Live (throttled internally to ~1fps)
             self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
-            // Forward video frames to WebRTC (no throttle -- WebRTC handles bitrate)
             self.webrtcSessionVM?.pushVideoFrame(image)
           }
         } else {
-          // In background: still forward to Gemini/WebRTC if possible
-          if let image = videoFrame.makeUIImage() {
+          // In background: makeUIImage() fails because VideoToolbox/GPU is suspended.
+          // Use CPU-based rendering from the raw pixel buffer instead.
+          self.backgroundFrameCount += 1
+          if self.backgroundFrameCount <= 3 || self.backgroundFrameCount % 24 == 0 {
+            NSLog("[Stream] Background frame #%d received", self.backgroundFrameCount)
+          }
+
+          if let image = self.makeUIImageCPU(from: videoFrame.sampleBuffer) {
             self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
             self.webrtcSessionVM?.pushVideoFrame(image)
           }
@@ -279,6 +290,35 @@ class StreamSessionViewModel: ObservableObject {
     case .streaming:
       streamingStatus = .streaming
     }
+  }
+
+  /// CPU-based UIImage creation from CMSampleBuffer, used when the app is backgrounded
+  /// and VideoToolbox/GPU rendering (used by makeUIImage()) is unavailable.
+  private func makeUIImageCPU(from sampleBuffer: CMSampleBuffer) -> UIImage? {
+    // Try raw pixel buffer first (VideoCodec.raw mode)
+    if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+      let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+      let width = CVPixelBufferGetWidth(pixelBuffer)
+      let height = CVPixelBufferGetHeight(pixelBuffer)
+      let rect = CGRect(x: 0, y: 0, width: width, height: height)
+      if let cgImage = cpuCIContext.createCGImage(ciImage, from: rect) {
+        return UIImage(cgImage: cgImage)
+      }
+    }
+
+    // Fallback: try compressed data buffer (H.264 mode, future DAT SDK versions)
+    if let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
+      var length: Int = 0
+      var dataPointer: UnsafeMutablePointer<Int8>?
+      let status = CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: nil,
+                                                totalLengthOut: &length, dataPointerOut: &dataPointer)
+      if status == noErr, let pointer = dataPointer {
+        let data = Data(bytes: pointer, count: length)
+        return UIImage(data: data)
+      }
+    }
+
+    return nil
   }
 
   private func formatStreamingError(_ error: StreamSessionError) -> String {
