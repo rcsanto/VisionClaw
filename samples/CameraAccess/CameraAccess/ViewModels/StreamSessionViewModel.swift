@@ -16,9 +16,11 @@
 
 import CoreImage
 import CoreMedia
+import CoreVideo
 import MWDATCamera
 import MWDATCore
 import SwiftUI
+import VideoToolbox
 
 enum StreamingStatus {
   case streaming
@@ -81,6 +83,8 @@ class StreamSessionViewModel: ObservableObject {
   // (VideoToolbox/GPU is unavailable when screen is locked)
   private let cpuCIContext = CIContext(options: [.useSoftwareRenderer: true])
   private var backgroundFrameCount = 0
+  private var lastForegroundImage: UIImage?
+  private var bgDiagLogged = false
 
   init(wearables: WearablesInterface) {
     self.wearables = wearables
@@ -135,8 +139,10 @@ class StreamSessionViewModel: ObservableObject {
 
         if !isInBackground {
           self.backgroundFrameCount = 0
+          self.bgDiagLogged = false
           if let image = videoFrame.makeUIImage() {
             self.currentVideoFrame = image
+            self.lastForegroundImage = image
             if !self.hasReceivedFirstFrame {
               self.hasReceivedFirstFrame = true
             }
@@ -144,14 +150,18 @@ class StreamSessionViewModel: ObservableObject {
             self.webrtcSessionVM?.pushVideoFrame(image)
           }
         } else {
-          // In background: makeUIImage() fails because VideoToolbox/GPU is suspended.
-          // Use CPU-based rendering from the raw pixel buffer instead.
+          // In background: makeUIImage() uses VideoToolbox/GPU which iOS suspends.
+          // Try multiple strategies to extract usable image data.
           self.backgroundFrameCount += 1
-          if self.backgroundFrameCount <= 3 || self.backgroundFrameCount % 24 == 0 {
-            NSLog("[Stream] Background frame #%d received", self.backgroundFrameCount)
+
+          let image = self.makeUIImageBackground(from: videoFrame)
+
+          if self.backgroundFrameCount <= 5 || self.backgroundFrameCount % 120 == 0 {
+            NSLog("[Stream] Background frame #%d, decoded=%@",
+                  self.backgroundFrameCount, image != nil ? "YES" : "NO")
           }
 
-          if let image = self.makeUIImageCPU(from: videoFrame.sampleBuffer) {
+          if let image {
             self.geminiSessionVM?.sendVideoFrameIfThrottled(image: image)
             self.webrtcSessionVM?.pushVideoFrame(image)
           }
@@ -292,33 +302,103 @@ class StreamSessionViewModel: ObservableObject {
     }
   }
 
-  /// CPU-based UIImage creation from CMSampleBuffer, used when the app is backgrounded
-  /// and VideoToolbox/GPU rendering (used by makeUIImage()) is unavailable.
-  private func makeUIImageCPU(from sampleBuffer: CMSampleBuffer) -> UIImage? {
-    // Try raw pixel buffer first (VideoCodec.raw mode)
+  /// Try multiple strategies to get a UIImage from a VideoFrame when backgrounded.
+  private func makeUIImageBackground(from videoFrame: VideoFrame) -> UIImage? {
+    let sampleBuffer = videoFrame.sampleBuffer
+    let hasPixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) != nil
+    let hasDataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) != nil
+
+    // Log diagnostics for the first few background frames
+    if !bgDiagLogged {
+      bgDiagLogged = true
+      let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer)
+      let mediaType = formatDesc.map { CMFormatDescriptionGetMediaType($0) } ?? 0
+      let mediaSubType = formatDesc.map { CMFormatDescriptionGetMediaSubType($0) } ?? 0
+      let subTypeStr = String(format: "%c%c%c%c",
+                              (mediaSubType >> 24) & 0xFF,
+                              (mediaSubType >> 16) & 0xFF,
+                              (mediaSubType >> 8) & 0xFF,
+                              mediaSubType & 0xFF)
+      NSLog("[Stream] BG frame format: mediaType=%d subType=%@ hasPixelBuf=%@ hasDataBuf=%@",
+            mediaType, subTypeStr, hasPixelBuffer ? "YES" : "NO", hasDataBuffer ? "YES" : "NO")
+    }
+
+    // Strategy 1: Raw pixel buffer (VideoCodec.raw) - use CPU CIContext
     if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
-      let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
       let width = CVPixelBufferGetWidth(pixelBuffer)
       let height = CVPixelBufferGetHeight(pixelBuffer)
+
+      // Try CIContext software renderer
+      let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
       let rect = CGRect(x: 0, y: 0, width: width, height: height)
       if let cgImage = cpuCIContext.createCGImage(ciImage, from: rect) {
         return UIImage(cgImage: cgImage)
       }
+
+      // Try direct VTCreateCGImageFromCVPixelBuffer (may work for some pixel formats)
+      var cgImage: CGImage?
+      let vtStatus = VTCreateCGImageFromCVPixelBuffer(pixelBuffer, options: nil, imageOut: &cgImage)
+      if vtStatus == noErr, let cgImage {
+        return UIImage(cgImage: cgImage)
+      }
+
+      // Try manual CGBitmapContext from pixel buffer data
+      if let image = createUIImageFromPixelBuffer(pixelBuffer) {
+        return image
+      }
     }
 
-    // Fallback: try compressed data buffer (H.264 mode, future DAT SDK versions)
-    if let dataBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) {
-      var length: Int = 0
-      var dataPointer: UnsafeMutablePointer<Int8>?
-      let status = CMBlockBufferGetDataPointer(dataBuffer, atOffset: 0, lengthAtOffsetOut: nil,
-                                                totalLengthOut: &length, dataPointerOut: &dataPointer)
-      if status == noErr, let pointer = dataPointer {
-        let data = Data(bytes: pointer, count: length)
-        return UIImage(data: data)
+    // Strategy 2: Compressed H.264 frame - try makeUIImage() anyway (might work for keyframes)
+    if hasDataBuffer {
+      if let image = videoFrame.makeUIImage() {
+        return image
       }
     }
 
     return nil
+  }
+
+  /// Direct pixel buffer to UIImage conversion using CGBitmapContext (no GPU, no CIContext).
+  private func createUIImageFromPixelBuffer(_ pixelBuffer: CVPixelBuffer) -> UIImage? {
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
+
+    let width = CVPixelBufferGetWidth(pixelBuffer)
+    let height = CVPixelBufferGetHeight(pixelBuffer)
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+
+    // Handle BGRA format (most common for raw video)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    var bitmapInfo: UInt32
+
+    switch pixelFormat {
+    case kCVPixelFormatType_32BGRA:
+      bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    case kCVPixelFormatType_32ARGB:
+      bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
+    default:
+      // For YUV or other formats, CIContext is needed
+      if backgroundFrameCount <= 5 {
+        NSLog("[Stream] BG unsupported pixel format: %d", pixelFormat)
+      }
+      return nil
+    }
+
+    guard let context = CGContext(
+      data: baseAddress,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: bytesPerRow,
+      space: colorSpace,
+      bitmapInfo: bitmapInfo
+    ) else { return nil }
+
+    guard let cgImage = context.makeImage() else { return nil }
+    return UIImage(cgImage: cgImage)
   }
 
   private func formatStreamingError(_ error: StreamSessionError) -> String {
