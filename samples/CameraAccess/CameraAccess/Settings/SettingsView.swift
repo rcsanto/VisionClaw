@@ -12,6 +12,7 @@ struct SettingsView: View {
   @State private var geminiSystemPrompt: String = ""
   @State private var webrtcSignalingURL: String = ""
   @State private var speakerOutputEnabled: Bool = false
+  @State private var videoStreamingEnabled: Bool = true
   @State private var showResetConfirmation = false
 
   var body: some View {
@@ -94,6 +95,10 @@ struct SettingsView: View {
           Toggle("Speaker Output", isOn: $speakerOutputEnabled)
         }
 
+        Section(header: Text("Video"), footer: Text("Disable video streaming to save battery. Audio remains active for voice-only interaction.")) {
+          Toggle("Video Streaming", isOn: $videoStreamingEnabled)
+        }
+
         Section {
           Button("Reset to Defaults") {
             showResetConfirmation = true
@@ -141,6 +146,7 @@ struct SettingsView: View {
     openClawGatewayToken = settings.openClawGatewayToken
     webrtcSignalingURL = settings.webrtcSignalingURL
     speakerOutputEnabled = settings.speakerOutputEnabled
+    videoStreamingEnabled = settings.videoStreamingEnabled
   }
 
   private func save() {
@@ -154,5 +160,6 @@ struct SettingsView: View {
     settings.openClawGatewayToken = openClawGatewayToken.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.webrtcSignalingURL = webrtcSignalingURL.trimmingCharacters(in: .whitespacesAndNewlines)
     settings.speakerOutputEnabled = speakerOutputEnabled
+    settings.videoStreamingEnabled = videoStreamingEnabled
   }
 }

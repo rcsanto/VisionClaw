@@ -179,6 +179,7 @@ class GeminiSessionViewModel: ObservableObject {
   }
 
   func sendVideoFrameIfThrottled(image: UIImage) {
+    guard SettingsManager.shared.videoStreamingEnabled else { return }
     guard isGeminiActive, connectionState == .ready else { return }
     let now = Date()
     guard now.timeIntervalSince(lastVideoFrameTime) >= GeminiConfig.videoFrameInterval else { return }

@@ -14,6 +14,7 @@ final class SettingsManager {
     case geminiSystemPrompt
     case webrtcSignalingURL
     case speakerOutputEnabled
+    case videoStreamingEnabled
   }
 
   private init() {}
@@ -69,12 +70,19 @@ final class SettingsManager {
     set { defaults.set(newValue, forKey: Key.speakerOutputEnabled.rawValue) }
   }
 
+  // MARK: - Video
+
+  var videoStreamingEnabled: Bool {
+    get { defaults.object(forKey: Key.videoStreamingEnabled.rawValue) as? Bool ?? true }
+    set { defaults.set(newValue, forKey: Key.videoStreamingEnabled.rawValue) }
+  }
+
   // MARK: - Reset
 
   func resetAll() {
     for key in [Key.geminiAPIKey, .geminiSystemPrompt, .openClawHost, .openClawPort,
                 .openClawHookToken, .openClawGatewayToken, .webrtcSignalingURL,
-                .speakerOutputEnabled] {
+                .speakerOutputEnabled, .videoStreamingEnabled] {
       defaults.removeObject(forKey: key.rawValue)
     }
   }
