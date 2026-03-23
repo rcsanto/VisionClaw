@@ -20,6 +20,10 @@ jobs:
         run: |
           cp samples/CameraAccess/CameraAccess/Secrets.swift.example samples/CameraAccess/CameraAccess/Secrets.swift
           sed -i '' 's/YOUR_GEMINI_API_KEY/${{ secrets.GEMINI_API_KEY }}/g' samples/CameraAccess/CameraAccess/Secrets.swift
+          sed -i '' 's|http://YOUR_MAC_HOSTNAME.local|http://104.236.38.223|g' samples/CameraAccess/CameraAccess/Secrets.swift
+          sed -i '' 's/YOUR_OPENCLAW_GATEWAY_TOKEN/${{ secrets.OPENCLAW_GATEWAY_TOKEN }}/g' samples/CameraAccess/CameraAccess/Secrets.swift
+          sed -i '' 's/YOUR_OPENCLAW_HOOK_TOKEN//g' samples/CameraAccess/CameraAccess/Secrets.swift
+          sed -i '' 's|ws://YOUR_MAC_IP:8080||g' samples/CameraAccess/CameraAccess/Secrets.swift
 
       - name: Build IPA (unsigned)
         run: |
@@ -35,15 +39,15 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p output
-          find build -name "*.app" -exec cp -r {} output/ \;
+          find build -name '*.app' -exec cp -r {} output/ ;
           cd output
           mkdir Payload
           mv *.app Payload/
-          zip -r MyAssistant.ipa Payload/
+          zip -r VisionClaw.ipa Payload/
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MyAssistant-IPA
-          path: output/MyAssistant.ipa
+          name: VisionClaw-IPA
+          path: output/VisionClaw.ipa
           retention-days: 7
