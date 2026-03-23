@@ -17,13 +17,18 @@ jobs:
           xcode-version: latest-stable
 
       - name: Create Secrets.swift
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
         run: |
           cp samples/CameraAccess/CameraAccess/Secrets.swift.example samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' 's/YOUR_GEMINI_API_KEY/${{ secrets.GEMINI_API_KEY }}/g' samples/CameraAccess/CameraAccess/Secrets.swift
+          sed -i '' "s/YOUR_GEMINI_API_KEY/${GEMINI_API_KEY}/g" samples/CameraAccess/CameraAccess/Secrets.swift
           sed -i '' 's|http://YOUR_MAC_HOSTNAME.local|http://104.236.38.223|g' samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' 's/YOUR_OPENCLAW_GATEWAY_TOKEN/${{ secrets.OPENCLAW_GATEWAY_TOKEN }}/g' samples/CameraAccess/CameraAccess/Secrets.swift
+          sed -i '' "s/YOUR_OPENCLAW_GATEWAY_TOKEN/${OPENCLAW_GATEWAY_TOKEN}/g" samples/CameraAccess/CameraAccess/Secrets.swift
           sed -i '' 's/YOUR_OPENCLAW_HOOK_TOKEN//g' samples/CameraAccess/CameraAccess/Secrets.swift
           sed -i '' 's|ws://YOUR_MAC_IP:8080||g' samples/CameraAccess/CameraAccess/Secrets.swift
+          echo "--- Secrets.swift (redacted) ---"
+          grep -v "API_KEY\|TOKEN" samples/CameraAccess/CameraAccess/Secrets.swift
 
       - name: Build IPA (unsigned)
         run: |
@@ -38,11 +43,11 @@ jobs:
 
       - name: Package IPA
         run: |
-          mkdir -p output
-          find build -name '*.app' -exec cp -r {} output/ ;
+          mkdir -p output/Payload
+          APP_PATH=$(find build -name "*.app" -not -path "*/SharedFrameworks/*" | head -1)
+          echo "Found app at: $APP_PATH"
+          cp -r "$APP_PATH" output/Payload/
           cd output
-          mkdir Payload
-          mv *.app Payload/
           zip -r VisionClaw.ipa Payload/
 
       - name: Upload IPA
