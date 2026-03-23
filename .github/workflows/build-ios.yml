@@ -17,18 +17,21 @@ jobs:
           xcode-version: latest-stable
 
       - name: Create Secrets.swift
+        run: |
+          python3 - <<'PYEOF'
+          import os
+          content = open('samples/CameraAccess/CameraAccess/Secrets.swift.example').read()
+          content = content.replace('YOUR_GEMINI_API_KEY', os.environ['GEMINI_API_KEY'])
+          content = content.replace('http://YOUR_MAC_HOSTNAME.local', 'http://104.236.38.223')
+          content = content.replace('YOUR_OPENCLAW_GATEWAY_TOKEN', os.environ['OPENCLAW_GATEWAY_TOKEN'])
+          content = content.replace('YOUR_OPENCLAW_HOOK_TOKEN', '')
+          content = content.replace('ws://YOUR_MAC_IP:8080', '')
+          open('samples/CameraAccess/CameraAccess/Secrets.swift', 'w').write(content)
+          print("Secrets.swift created - host check:", 'http://104.236.38.223' in content)
+          PYEOF
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENCLAW_GATEWAY_TOKEN: ${{ secrets.OPENCLAW_GATEWAY_TOKEN }}
-        run: |
-          cp samples/CameraAccess/CameraAccess/Secrets.swift.example samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' "s/YOUR_GEMINI_API_KEY/${GEMINI_API_KEY}/g" samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' 's|http://YOUR_MAC_HOSTNAME.local|http://104.236.38.223|g' samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' "s/YOUR_OPENCLAW_GATEWAY_TOKEN/${OPENCLAW_GATEWAY_TOKEN}/g" samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' 's/YOUR_OPENCLAW_HOOK_TOKEN//g' samples/CameraAccess/CameraAccess/Secrets.swift
-          sed -i '' 's|ws://YOUR_MAC_IP:8080||g' samples/CameraAccess/CameraAccess/Secrets.swift
-          echo "--- Secrets.swift (redacted) ---"
-          grep -v "API_KEY\|TOKEN" samples/CameraAccess/CameraAccess/Secrets.swift
 
       - name: Build IPA (unsigned)
         run: |
